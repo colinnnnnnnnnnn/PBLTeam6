@@ -7,6 +7,7 @@ from sklearn.preprocessing import LabelEncoder
 import cv2
 import os
 
+print('help')
 
 # Load the dataset (same as previous script)
 def load_dataset(csv_path):
