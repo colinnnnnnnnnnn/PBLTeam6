@@ -1,13 +1,12 @@
 import pandas as pd
 import numpy as np
+from sklearn.metrics import classification_report
 import tensorflow as tf
 from keras import layers, models
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import cv2
 import os
-
-print('help')
 
 # Load the dataset (same as previous script)
 def load_dataset(csv_path):
@@ -89,7 +88,7 @@ def create_model(input_shape, num_classes):
 
 # Train and save the model
 def train_and_save_model(csv_path, model_path='handwritten_character_model.h5',
-                         label_encoder_path='label_encoder.pkl'):
+                         label_encoder_path='label_encoder.pkl', epochs=100, batch_size=32):
     """
     Train the model and save it along with the label encoder
 
@@ -97,10 +96,16 @@ def train_and_save_model(csv_path, model_path='handwritten_character_model.h5',
         csv_path (str): Path to the CSV file with image paths and labels
         model_path (str): Path to save the trained model
         label_encoder_path (str): Path to save the label encoder
+        epochs (int): Number of training epochs
+        batch_size (int): Batch size for training
 
     Returns:
         tuple: Trained model and label encoder
     """
+    # Validate CSV file
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    
     # Load dataset
     X, y = load_dataset(csv_path)
 
@@ -119,17 +124,29 @@ def train_and_save_model(csv_path, model_path='handwritten_character_model.h5',
     # Create and train the model
     model = create_model((28, 28, 1), num_classes)
 
+    # Add early stopping
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss', patience=10, restore_best_weights=True
+    )
+
     # Train the model
     history = model.fit(
         X_train, y_train,
-        epochs=100,
+        epochs=epochs,
         validation_split=0.2,
-        batch_size=32
+        batch_size=batch_size,
+        callbacks=[early_stopping]
     )
 
     # Evaluate the model
     test_loss, test_accuracy = model.evaluate(X_test, y_test)
     print(f"\nTest accuracy: {test_accuracy:.4f}")
+
+    # Detailed evaluation
+    y_pred = model.predict(X_test)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred_classes, target_names=label_encoder.classes_))
 
     # Save the model
     model.save(model_path)
@@ -142,7 +159,6 @@ def train_and_save_model(csv_path, model_path='handwritten_character_model.h5',
     print(f"Label encoder saved to {label_encoder_path}")
 
     return model, label_encoder
-
 
 
 # Load the trained model and label encoder
@@ -209,6 +225,6 @@ if __name__ == "__main__":
     model, label_encoder = load_trained_model()
 
     # Make a prediction
-    sample_image_path = 'Img/img046-010.png'
+    sample_image_path = 'Img/img017-009.png'
     predicted_char = predict_character(model, label_encoder, sample_image_path)
     print(f"Predicted character: {predicted_char}")
