@@ -1,8 +1,12 @@
 # Datasets
-english.csv
-Img
+
+# just for now...
+README.md
 # Models
 Models
+
+# Encoders
+label_encoder.pkl
 # Compiled source #
 ###################
 *.com
