@@ -5,7 +5,7 @@ import numpy as np
 from mltu.inferenceModel import OnnxInferenceModel
 from mltu.utils.text_utils import ctc_decoder, get_cer
 
-# AFTER YOU TRAINED YOU MODEL:
+# AFTER YOU TRAINED YOU NEW MODEL:
 # 1. CHANGE THE PATH: Models/03_handwriting_recognition/xxxxxxxxxxxx/configs.yaml
 # 2. RUN THIS FILE
 
@@ -30,11 +30,11 @@ if __name__ == "__main__":
     from tqdm import tqdm
     from mltu.configs import BaseModelConfigs
 
-    configs = BaseModelConfigs.load("Models/03_handwriting_recognition/202504142016/configs.yaml")
+    configs = BaseModelConfigs.load("Models/03_handwriting_recognition/202504142105/configs.yaml")
 
     model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
    
-    df = pd.read_csv("Models/03_handwriting_recognition/202504142016/val.csv").values.tolist()
+    df = pd.read_csv("Models/03_handwriting_recognition/202504142105/val.csv").values.tolist()
 
     accum_cer = []
     for image_path, label in tqdm(df):
