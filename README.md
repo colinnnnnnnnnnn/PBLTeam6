@@ -1,4 +1,4 @@
-Requirements:
+Requirements:\n
 Python 3.10.X (https://www.python.org/downloads/)
 Tensorflow 2.10 (https://pypi.org/project/tensorflow/2.10.0/#files)
 Numpy 1.26.4 (pip install numpy=1.26.4)
