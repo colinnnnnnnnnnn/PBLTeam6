@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Dataset exploration utility for writer identification project.
 """

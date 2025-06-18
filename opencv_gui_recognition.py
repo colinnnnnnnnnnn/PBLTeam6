@@ -1,51 +1,68 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 import cv2
 import numpy as np
 import os
 from PIL import Image, ImageTk
-import urllib.request
-import pytesseract
+import shutil
+import json
+from pathlib import Path
+import sys
 
-# Configure Tesseract path for Windows
+# --- OCR dependencies ---
 try:
     import pytesseract
-    # Try to set the Tesseract path for Windows
-    if os.name == 'nt':  # Windows
-        # Common Tesseract installation paths on Windows
+    # Tesseract path config for Windows
+    if os.name == 'nt':
         possible_paths = [
             r'C:\Program Files\Tesseract-OCR\tesseract.exe',
             r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
             r'C:\Users\{}\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'.format(os.getenv('USERNAME')),
         ]
-        
         for path in possible_paths:
             if os.path.exists(path):
                 pytesseract.pytesseract.tesseract_cmd = path
-                print(f"Tesseract found at: {path}")
                 break
-        else:
-            print("Warning: Tesseract not found in common locations. Make sure it's in your PATH.")
 except ImportError:
-    print("Warning: pytesseract not installed. OCR functionality will be limited.")
+    pytesseract = None
 
-# Custom model import
 try:
-    from inferenceModel import ImageToWordModel
-    from mltu.configs import BaseModelConfigs
+    import onnxruntime as ort
 except ImportError:
-    ImageToWordModel = None
-    BaseModelConfigs = None
+    ort = None
+try:
+    from tensorflow import keras
+except ImportError:
+    keras = None
 
-class TextRecognitionGUI:
+# --- Writer Identification dependencies ---
+import importlib.util
+writer_id_path = os.path.join(os.path.dirname(__file__), 'writer-identification', 'predict.py')
+WriterIdentifier = None
+if os.path.exists(writer_id_path):
+    spec = importlib.util.spec_from_file_location("writer_identification_predict", writer_id_path)
+    writer_id_module = importlib.util.module_from_spec(spec)
+    sys.modules["writer_identification_predict"] = writer_id_module
+    try:
+        spec.loader.exec_module(writer_id_module)
+        WriterIdentifier = getattr(writer_id_module, "WriterIdentifier", None)
+    except Exception as e:
+        print("Error importing WriterIdentifier:", e)
+        import traceback; traceback.print_exc()
+        WriterIdentifier = None
+
+class UnifiedHandwritingGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Text Recognition (Tesseract or Custom Model)")
-        self.root.geometry("900x700")
-        self.current_image = None
+        self.root.title("Handwriting Analysis: Writer ID & Text Recognition")
+        self.root.geometry("1100x800")
         self.current_image_path = None
-        self.config_path = ""
-        self.recognition_method = tk.StringVar(value="Tesseract")
+        self.writer_model_path = tk.StringVar()
+        self.writer_metadata_path = tk.StringVar()
+        self.text_model_type = tk.StringVar(value="Tesseract")
+        self.text_model_path = tk.StringVar()
+        self.writer_result = None
+        self.text_result = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -54,87 +71,69 @@ class TextRecognitionGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(2, weight=1)
+        main_frame.rowconfigure(3, weight=1)
 
-        title_label = ttk.Label(main_frame, text="Text Recognition", font=("Arial", 16, "bold"))
-        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
-
-        # Recognition method selection
-        ttk.Label(main_frame, text="Recognition Method:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        method_combo = ttk.Combobox(main_frame, textvariable=self.recognition_method, values=["Tesseract", "Custom Model"], state="readonly", width=20)
-        method_combo.grid(row=1, column=1, sticky=tk.W, padx=(5, 5), pady=5)
-        method_combo.bind("<<ComboboxSelected>>", self.on_method_change)
-
-        # Config path for custom model
-        self.config_var = tk.StringVar()
-        self.config_entry = ttk.Entry(main_frame, textvariable=self.config_var, width=50, state="disabled")
-        self.config_entry.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(5, 5), pady=5)
-        self.config_browse_btn = ttk.Button(main_frame, text="Browse Config", command=self.browse_config, state="disabled")
-        self.config_browse_btn.grid(row=2, column=2, pady=5)
-        ttk.Label(main_frame, text="Custom Model Config:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        # Title
+        ttk.Label(main_frame, text="Handwriting Analysis", font=("Arial", 18, "bold")).grid(row=0, column=0, columnspan=4, pady=(0, 20))
 
         # Image selection
-        ttk.Label(main_frame, text="Image:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Image:").grid(row=1, column=0, sticky=tk.W)
         self.image_var = tk.StringVar()
-        image_entry = ttk.Entry(main_frame, textvariable=self.image_var, width=60)
-        image_entry.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(5, 5), pady=5)
-        ttk.Button(main_frame, text="Browse", command=self.browse_image).grid(row=3, column=2, pady=5)
+        ttk.Entry(main_frame, textvariable=self.image_var, width=60).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5)
+        ttk.Button(main_frame, text="Browse", command=self.browse_image).grid(row=1, column=2, padx=5)
+        ttk.Button(main_frame, text="Clear", command=self.clear_all).grid(row=1, column=3, padx=5)
 
-        # Buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=4, column=0, columnspan=3, pady=20)
-        ttk.Button(button_frame, text="Recognize Text", command=self.recognize_text).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Save Results", command=self.save_results).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Clear", command=self.clear_results).pack(side=tk.LEFT, padx=5)
-
-        # Image display
+        # Image preview
         image_frame = ttk.LabelFrame(main_frame, text="Image Preview", padding="10")
-        image_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        image_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
         image_frame.columnconfigure(0, weight=1)
         image_frame.rowconfigure(0, weight=1)
         self.image_label = ttk.Label(image_frame, text="No image loaded")
         self.image_label.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # Results
-        results_frame = ttk.LabelFrame(main_frame, text="Recognition Results", padding="10")
-        results_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
-        results_frame.columnconfigure(0, weight=1)
-        self.result_text = tk.Text(results_frame, height=6, wrap=tk.WORD)
-        self.result_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.result_text.yview)
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        self.result_text.configure(yscrollcommand=scrollbar.set)
+        # --- Writer Identification Section ---
+        writer_frame = ttk.LabelFrame(main_frame, text="Writer Identification", padding="10")
+        writer_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N), pady=10)
+        writer_frame.columnconfigure(1, weight=1)
+        ttk.Label(writer_frame, text="Model (.pth):").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(writer_frame, textvariable=self.writer_model_path, width=40).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=5)
+        ttk.Button(writer_frame, text="Browse", command=self.browse_writer_model).grid(row=0, column=2, padx=5)
+        ttk.Label(writer_frame, text="Metadata (.json):").grid(row=1, column=0, sticky=tk.W)
+        ttk.Entry(writer_frame, textvariable=self.writer_metadata_path, width=40).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5)
+        ttk.Button(writer_frame, text="Browse", command=self.browse_writer_metadata).grid(row=1, column=2, padx=5)
+        ttk.Button(writer_frame, text="Identify Writer", command=self.identify_writer).grid(row=2, column=0, columnspan=3, pady=10)
+        self.writer_result_text = tk.Text(writer_frame, height=6, width=60, wrap=tk.WORD)
+        self.writer_result_text.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E))
+
+        # --- Text Recognition Section ---
+        text_frame = ttk.LabelFrame(main_frame, text="Text Recognition", padding="10")
+        text_frame.grid(row=3, column=2, columnspan=2, sticky=(tk.W, tk.E, tk.N), pady=10)
+        text_frame.columnconfigure(1, weight=1)
+        ttk.Label(text_frame, text="Method:").grid(row=0, column=0, sticky=tk.W)
+        method_combo = ttk.Combobox(text_frame, textvariable=self.text_model_type, values=["Tesseract", "ONNX", "Keras (.h5)"], state="readonly", width=15)
+        method_combo.grid(row=0, column=1, sticky=tk.W, padx=5)
+        method_combo.bind("<<ComboboxSelected>>", self.on_text_method_change)
+        ttk.Label(text_frame, text="Model (if needed):").grid(row=1, column=0, sticky=tk.W)
+        self.text_model_entry = ttk.Entry(text_frame, textvariable=self.text_model_path, width=40, state="disabled")
+        self.text_model_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5)
+        self.text_model_browse_btn = ttk.Button(text_frame, text="Browse", command=self.browse_text_model, state="disabled")
+        self.text_model_browse_btn.grid(row=1, column=2, padx=5)
+        ttk.Button(text_frame, text="Recognize Text", command=self.recognize_text).grid(row=2, column=0, columnspan=3, pady=10)
+        self.text_result_text = tk.Text(text_frame, height=6, width=60, wrap=tk.WORD)
+        self.text_result_text.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E))
+
+        # --- Add New Author Section ---
+        ttk.Button(main_frame, text="Add New Author", command=self.add_new_author).grid(row=4, column=0, columnspan=4, pady=10)
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN)
-        status_bar.grid(row=7, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
-
-    def on_method_change(self, event=None):
-        method = self.recognition_method.get()
-        if method == "Custom Model":
-            self.config_entry.config(state="normal")
-            self.config_browse_btn.config(state="normal")
-        else:
-            self.config_entry.config(state="disabled")
-            self.config_browse_btn.config(state="disabled")
-
-    def browse_config(self):
-        filename = filedialog.askopenfilename(
-            title="Select Model Config File",
-            filetypes=[("YAML files", "*.yaml"), ("All files", "*.*")]
-        )
-        if filename:
-            self.config_var.set(filename)
-            self.config_path = filename
+        status_bar.grid(row=5, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
 
     def browse_image(self):
         filename = filedialog.askopenfilename(
             title="Select Image File",
-            filetypes=[
-                ("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff"),
-                ("All files", "*.*")
-            ]
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff"), ("All files", "*.*")]
         )
         if filename:
             self.image_var.set(filename)
@@ -154,92 +153,159 @@ class TextRecognitionGUI:
         except Exception as e:
             messagebox.showerror("Error", f"Could not load image: {e}")
 
-    def recognize_text(self):
-        method = self.recognition_method.get()
+    def clear_all(self):
+        self.image_var.set("")
+        self.current_image_path = None
+        self.image_label.configure(image="", text="No image loaded")
+        self.writer_result_text.delete(1.0, tk.END)
+        self.text_result_text.delete(1.0, tk.END)
+        self.status_var.set("Ready")
+
+    def browse_writer_model(self):
+        filename = filedialog.askopenfilename(title="Select PyTorch Model (.pth)", filetypes=[("PyTorch model", "*.pth"), ("All files", "*.*")])
+        if filename:
+            self.writer_model_path.set(filename)
+
+    def browse_writer_metadata(self):
+        filename = filedialog.askopenfilename(title="Select Metadata (.json)", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if filename:
+            self.writer_metadata_path.set(filename)
+
+    def on_text_method_change(self, event=None):
+        method = self.text_model_type.get()
+        if method == "Tesseract":
+            self.text_model_entry.config(state="disabled")
+            self.text_model_browse_btn.config(state="disabled")
+        else:
+            self.text_model_entry.config(state="normal")
+            self.text_model_browse_btn.config(state="normal")
+
+    def browse_text_model(self):
+        method = self.text_model_type.get()
+        if method == "ONNX":
+            filetypes = [("ONNX model", "*.onnx"), ("All files", "*.*")]
+        else:
+            filetypes = [("Keras model", "*.h5"), ("All files", "*.*")]
+        filename = filedialog.askopenfilename(title="Select Model File", filetypes=filetypes)
+        if filename:
+            self.text_model_path.set(filename)
+
+    def identify_writer(self):
+        self.writer_result_text.delete(1.0, tk.END)
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             messagebox.showerror("Error", "Please select a valid image file")
             return
-        self.result_text.delete(1.0, tk.END)
-        if method == "Tesseract":
-            self.status_var.set("Running Tesseract OCR on whole image...")
-            self.root.update()
-            try:
+        if not self.writer_model_path.get() or not self.writer_metadata_path.get():
+            messagebox.showerror("Error", "Please select both model and metadata for writer identification")
+            return
+        if WriterIdentifier is None:
+            messagebox.showerror("Error", "WriterIdentifier class not available. Check dependencies.")
+            return
+        self.status_var.set("Identifying writer...")
+        self.root.update()
+        try:
+            # Patch: WriterIdentifier expects metadata next to .pth, so copy if needed
+            model_path = Path(self.writer_model_path.get())
+            metadata_path = Path(self.writer_metadata_path.get())
+            if metadata_path.parent != model_path.parent:
+                # Copy metadata to model dir with correct name
+                target = model_path.parent / metadata_path.name
+                shutil.copy(metadata_path, target)
+            identifier = WriterIdentifier(model_path, device="cpu")
+            results = identifier.predict_image(Path(self.current_image_path), top_k=5)
+            self.writer_result = results
+            if not results:
+                self.writer_result_text.insert(tk.END, "No prediction.")
+            else:
+                for pred in results:
+                    self.writer_result_text.insert(tk.END, f"{pred['rank']}. {pred['writer_id']} (confidence: {pred['confidence']:.3f})\n")
+            self.status_var.set("Writer identification completed.")
+        except Exception as e:
+            self.status_var.set("Error during writer identification")
+            messagebox.showerror("Error", f"Error during writer identification: {e}")
+
+    def recognize_text(self):
+        self.text_result_text.delete(1.0, tk.END)
+        if not self.current_image_path or not os.path.exists(self.current_image_path):
+            messagebox.showerror("Error", "Please select a valid image file")
+            return
+        method = self.text_model_type.get()
+        self.status_var.set(f"Running {method} text recognition...")
+        self.root.update()
+        try:
+            if method == "Tesseract":
+                if pytesseract is None:
+                    raise RuntimeError("pytesseract not installed")
                 image = cv2.imread(self.current_image_path)
                 if image is None:
                     raise ValueError("Could not load image")
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                 text = pytesseract.image_to_string(gray, config='--psm 6')
-                self.result_text.insert(tk.END, f"Tesseract OCR Result:\n{'-'*30}\n{text.strip()}\n")
-                self.status_var.set("Tesseract OCR completed")
-            except Exception as e:
-                self.status_var.set("Error during Tesseract OCR")
-                messagebox.showerror("Error", f"Error during Tesseract OCR: {e}")
-        elif method == "Custom Model":
-            if not self.config_var.get() or not os.path.exists(self.config_var.get()):
-                messagebox.showerror("Error", "Please select a valid custom model config file")
-                return
-            if ImageToWordModel is None or BaseModelConfigs is None:
-                messagebox.showerror("Error", "Custom model code not available.")
-                return
-            self.status_var.set("Running custom model inference...")
-            self.root.update()
-            try:
-                configs = BaseModelConfigs.load(self.config_var.get())
-                model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
+                self.text_result = text.strip()
+                self.text_result_text.insert(tk.END, f"Tesseract OCR Result:\n{'-'*30}\n{text.strip()}\n")
+            elif method == "ONNX":
+                if ort is None:
+                    raise RuntimeError("onnxruntime not installed")
+                if not self.text_model_path.get():
+                    raise RuntimeError("Please select an ONNX model file")
                 image = cv2.imread(self.current_image_path)
                 if image is None:
                     raise ValueError("Could not load image")
-                if len(image.shape) == 2:
-                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                elif image.shape[2] == 4:
-                    image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-                text = model.predict(image)
-                self.result_text.insert(tk.END, f"Custom Model OCR Result:\n{'-'*30}\n{text.strip()}\n")
-                self.status_var.set("Custom model inference completed")
-            except Exception as e:
-                self.status_var.set("Error during custom model inference")
-                messagebox.showerror("Error", f"Error during custom model inference: {e}")
+                # Preprocess: resize to model input, normalize, etc. (assume 128x32, 3ch, float32, 0-1)
+                img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(img, (128, 32))
+                img = img.astype(np.float32) / 255.0
+                img = np.expand_dims(img, axis=0)
+                session = ort.InferenceSession(self.text_model_path.get())
+                input_name = session.get_inputs()[0].name
+                output = session.run(None, {input_name: img})[0]
+                # Decoding: just show argmax chars for demo (real model needs vocab)
+                pred = np.argmax(output, axis=2)[0]
+                text = ''.join([chr(c) for c in pred if c > 0 and c < 128])
+                self.text_result = text
+                self.text_result_text.insert(tk.END, f"ONNX Model Result:\n{'-'*30}\n{text}\n")
+            elif method == "Keras (.h5)":
+                if keras is None:
+                    raise RuntimeError("TensorFlow/Keras not installed")
+                if not self.text_model_path.get():
+                    raise RuntimeError("Please select a Keras .h5 model file")
+                image = cv2.imread(self.current_image_path)
+                if image is None:
+                    raise ValueError("Could not load image")
+                img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(img, (128, 32))
+                img = img.astype(np.float32) / 255.0
+                img = np.expand_dims(img, axis=0)
+                model = keras.models.load_model(self.text_model_path.get())
+                output = model.predict(img)
+                pred = np.argmax(output, axis=2)[0]
+                text = ''.join([chr(c) for c in pred if c > 0 and c < 128])
+                self.text_result = text
+                self.text_result_text.insert(tk.END, f"Keras Model Result:\n{'-'*30}\n{text}\n")
+            self.status_var.set(f"{method} text recognition completed.")
+        except Exception as e:
+            self.status_var.set(f"Error during {method} text recognition")
+            messagebox.showerror("Error", f"Error during {method} text recognition: {e}")
 
-    def save_results(self):
-        """Save the recognition result text to a .txt file."""
-        result = self.result_text.get(1.0, tk.END).strip()
-        if not result:
-            messagebox.showwarning("Warning", "No recognition result to save.")
+    def add_new_author(self):
+        if not self.current_image_path or not os.path.exists(self.current_image_path):
+            messagebox.showerror("Error", "Please select a valid image file")
             return
-        default_name = "result.txt"
-        if self.current_image_path:
-            base = os.path.splitext(os.path.basename(self.current_image_path))[0]
-            default_name = f"{base}_result.txt"
-        filename = filedialog.asksaveasfilename(
-            title="Save Recognition Result",
-            defaultextension=".txt",
-            initialfile=default_name,
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
-        if filename:
-            try:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(result)
-                messagebox.showinfo("Success", f"Recognition result saved to:\n{filename}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save result: {e}")
-
-    def clear_results(self):
-        self.result_text.delete(1.0, tk.END)
-        self.image_label.configure(image="", text="No image loaded")
-        self.image_label.image = None
-        self.current_image_path = None
-        self.image_var.set("")
-        self.status_var.set("Ready")
-        self.config_var.set("")
-        self.config_path = ""
-        self.recognition_method.set("Tesseract")
-        self.config_entry.config(state="disabled")
-        self.config_browse_btn.config(state="disabled")
+        label = simpledialog.askstring("Add New Author", "Enter new author label (folder name):")
+        if not label:
+            return
+        data_dir = os.path.join(os.path.dirname(__file__), "writer-identification", "data", label)
+        os.makedirs(data_dir, exist_ok=True)
+        # Copy image to new author folder
+        base = os.path.basename(self.current_image_path)
+        dest = os.path.join(data_dir, base)
+        shutil.copy(self.current_image_path, dest)
+        messagebox.showinfo("Success", f"Image added to new author '{label}'. You can retrain the model to include this author.")
+        self.status_var.set(f"Added new author: {label}")
 
 def main():
     root = tk.Tk()
-    app = TextRecognitionGUI(root)
+    app = UnifiedHandwritingGUI(root)
     root.mainloop()
 
 if __name__ == "__main__":
