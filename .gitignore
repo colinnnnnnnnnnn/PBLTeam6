@@ -1,6 +1,9 @@
 # Datasets
 Datasets
 
+# Cache files
+__pycache__
+
 # just for now...
 README.md
 
