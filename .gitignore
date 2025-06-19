@@ -49,3 +49,5 @@ label_encoder.pkl
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+.venv

@@ -255,19 +255,4 @@ def main():
                 print(f"\n{result['image_path']}: ERROR - {result['error']}")
 
 if __name__ == "__main__":
-    main()
-
-# Add dynamic import for WriterIdentifier
-writer_id_path = os.path.join(os.path.dirname(__file__), 'writer-identification', 'predict.py')
-WriterIdentifier = None
-if os.path.exists(writer_id_path):
-    spec = importlib.util.spec_from_file_location("writer_identification_predict", writer_id_path)
-    writer_id_module = importlib.util.module_from_spec(spec)
-    sys.modules["writer_identification_predict"] = writer_id_module
-    try:
-        spec.loader.exec_module(writer_id_module)
-        WriterIdentifier = getattr(writer_id_module, "WriterIdentifier", None)
-    except Exception as e:
-        print("Error importing WriterIdentifier:", e)
-        import traceback; traceback.print_exc()
-        WriterIdentifier = None 
+    main() 

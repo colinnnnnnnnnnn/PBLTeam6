@@ -38,6 +38,7 @@ except ImportError:
 # --- Writer Identification dependencies ---
 import importlib.util
 writer_id_path = os.path.join(os.path.dirname(__file__), 'writer-identification', 'predict.py')
+# from writer-identification.model import WriterIdentifier
 WriterIdentifier = None
 if os.path.exists(writer_id_path):
     spec = importlib.util.spec_from_file_location("writer_identification_predict", writer_id_path)
@@ -58,7 +59,6 @@ class UnifiedHandwritingGUI:
         self.root.geometry("1100x800")
         self.current_image_path = None
         self.writer_model_path = tk.StringVar()
-        self.writer_metadata_path = tk.StringVar()
         self.text_model_type = tk.StringVar(value="Tesseract")
         self.text_model_path = tk.StringVar()
         self.writer_result = None
@@ -98,12 +98,9 @@ class UnifiedHandwritingGUI:
         ttk.Label(writer_frame, text="Model (.pth):").grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(writer_frame, textvariable=self.writer_model_path, width=40).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=5)
         ttk.Button(writer_frame, text="Browse", command=self.browse_writer_model).grid(row=0, column=2, padx=5)
-        ttk.Label(writer_frame, text="Metadata (.json):").grid(row=1, column=0, sticky=tk.W)
-        ttk.Entry(writer_frame, textvariable=self.writer_metadata_path, width=40).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5)
-        ttk.Button(writer_frame, text="Browse", command=self.browse_writer_metadata).grid(row=1, column=2, padx=5)
-        ttk.Button(writer_frame, text="Identify Writer", command=self.identify_writer).grid(row=2, column=0, columnspan=3, pady=10)
+        ttk.Button(writer_frame, text="Identify Writer", command=self.identify_writer).grid(row=1, column=0, columnspan=3, pady=10)
         self.writer_result_text = tk.Text(writer_frame, height=6, width=60, wrap=tk.WORD)
-        self.writer_result_text.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        self.writer_result_text.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E))
 
         # --- Text Recognition Section ---
         text_frame = ttk.LabelFrame(main_frame, text="Text Recognition", padding="10")
@@ -166,11 +163,6 @@ class UnifiedHandwritingGUI:
         if filename:
             self.writer_model_path.set(filename)
 
-    def browse_writer_metadata(self):
-        filename = filedialog.askopenfilename(title="Select Metadata (.json)", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
-        if filename:
-            self.writer_metadata_path.set(filename)
-
     def on_text_method_change(self, event=None):
         method = self.text_model_type.get()
         if method == "Tesseract":
@@ -195,8 +187,8 @@ class UnifiedHandwritingGUI:
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             messagebox.showerror("Error", "Please select a valid image file")
             return
-        if not self.writer_model_path.get() or not self.writer_metadata_path.get():
-            messagebox.showerror("Error", "Please select both model and metadata for writer identification")
+        if not self.writer_model_path.get():
+            messagebox.showerror("Error", "Please select a model file for writer identification")
             return
         if WriterIdentifier is None:
             messagebox.showerror("Error", "WriterIdentifier class not available. Check dependencies.")
@@ -204,13 +196,7 @@ class UnifiedHandwritingGUI:
         self.status_var.set("Identifying writer...")
         self.root.update()
         try:
-            # Patch: WriterIdentifier expects metadata next to .pth, so copy if needed
             model_path = Path(self.writer_model_path.get())
-            metadata_path = Path(self.writer_metadata_path.get())
-            if metadata_path.parent != model_path.parent:
-                # Copy metadata to model dir with correct name
-                target = model_path.parent / metadata_path.name
-                shutil.copy(metadata_path, target)
             identifier = WriterIdentifier(model_path, device="cpu")
             results = identifier.predict_image(Path(self.current_image_path), top_k=5)
             self.writer_result = results
