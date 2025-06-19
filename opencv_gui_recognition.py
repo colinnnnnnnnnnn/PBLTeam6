@@ -107,7 +107,7 @@ class UnifiedHandwritingGUI:
         text_frame.grid(row=3, column=2, columnspan=2, sticky=(tk.W, tk.E, tk.N), pady=10)
         text_frame.columnconfigure(1, weight=1)
         ttk.Label(text_frame, text="Method:").grid(row=0, column=0, sticky=tk.W)
-        method_combo = ttk.Combobox(text_frame, textvariable=self.text_model_type, values=["Tesseract", "ONNX", "Keras (.h5)"], state="readonly", width=15)
+        method_combo = ttk.Combobox(text_frame, textvariable=self.text_model_type, values=["Tesseract", "ONNX", "Keras (.h5)", "Custom Model (.yaml)"], state="readonly", width=20)
         method_combo.grid(row=0, column=1, sticky=tk.W, padx=5)
         method_combo.bind("<<ComboboxSelected>>", self.on_text_method_change)
         ttk.Label(text_frame, text="Model (if needed):").grid(row=1, column=0, sticky=tk.W)
@@ -168,6 +168,11 @@ class UnifiedHandwritingGUI:
         if method == "Tesseract":
             self.text_model_entry.config(state="disabled")
             self.text_model_browse_btn.config(state="disabled")
+        elif method == "Custom Model (.yaml)":
+            self.text_model_entry.config(state="normal")
+            self.text_model_browse_btn.config(state="normal")
+            self.text_model_entry.delete(0, tk.END)
+            self.text_model_entry.insert(0, "Select .yaml config file")
         else:
             self.text_model_entry.config(state="normal")
             self.text_model_browse_btn.config(state="normal")
@@ -176,8 +181,12 @@ class UnifiedHandwritingGUI:
         method = self.text_model_type.get()
         if method == "ONNX":
             filetypes = [("ONNX model", "*.onnx"), ("All files", "*.*")]
-        else:
+        elif method == "Keras (.h5)":
             filetypes = [("Keras model", "*.h5"), ("All files", "*.*")]
+        elif method == "Custom Model (.yaml)":
+            filetypes = [("YAML config", "*.yaml"), ("All files", "*.*")]
+        else:
+            filetypes = [("All files", "*.*")]
         filename = filedialog.askopenfilename(title="Select Model File", filetypes=filetypes)
         if filename:
             self.text_model_path.set(filename)
@@ -229,6 +238,28 @@ class UnifiedHandwritingGUI:
                 text = pytesseract.image_to_string(gray, config='--psm 6')
                 self.text_result = text.strip()
                 self.text_result_text.insert(tk.END, f"Tesseract OCR Result:\n{'-'*30}\n{text.strip()}\n")
+            elif method == "Custom Model (.yaml)":
+                # Import here to avoid import errors if not needed
+                try:
+                    from mltu.configs import BaseModelConfigs
+                    from inferenceModel import ImageToWordModel
+                except ImportError:
+                    raise RuntimeError("Custom model code not available. Ensure mltu and inferenceModel.py are present.")
+                if not self.text_model_path.get() or not self.text_model_path.get().endswith('.yaml'):
+                    raise RuntimeError("Please select a .yaml config file for the custom model")
+                configs = BaseModelConfigs.load(self.text_model_path.get())
+                model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
+                image = cv2.imread(self.current_image_path)
+                if image is None:
+                    raise ValueError("Could not load image")
+                # Preprocess: ensure 3 channels
+                if len(image.shape) == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                elif image.shape[2] == 4:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+                text = model.predict(image)
+                self.text_result = text.strip()
+                self.text_result_text.insert(tk.END, f"Custom Model OCR Result:\n{'-'*30}\n{text.strip()}\n")
             elif method == "ONNX":
                 if ort is None:
                     raise RuntimeError("onnxruntime not installed")
